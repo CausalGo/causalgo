@@ -2,8 +2,11 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/CausalGo/causalgo.svg)](https://pkg.go.dev/github.com/CausalGo/causalgo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/CausalGo/causalgo/actions/workflows/go.yml/badge.svg)](https://github.com/CausalGo/causalgo/actions/workflows/go.yml)
 [![Benchmarks](https://img.shields.io/badge/benchmarks-results-brightgreen)](BENCHMARKS.md)
+[![Go Report Card](https://goreportcard.com/badge/github.com/CausalGo/causalgo)](https://goreportcard.com/report/github.com/CausalGo/causalgo)
+[![Go Reference](https://pkg.go.dev/badge/github.com/CausalGo/causalgo.svg)](https://pkg.go.dev/github.com/CausalGo/causalgo)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/CausalGo/causalgo/actions/workflows/go.yml/badge.svg)](https://github.com/CausalGo/causalgo/actions/workflows/go.yml)
 
 **CausalGo** is a high-performance implementation of the SURD algorithm (Sparse Unbiased Recursive Regression) for causal discovery in datasets. Based on the [research published in Nature Communications](https://www.nature.com/articles/s41467-024-53373-4), it provides 5-10x speedup compared to the original Python implementation.
 
@@ -58,6 +61,18 @@ func main() {
         fmt.Printf("Variable %d: %v\n", i, row)
     }
 }
+```
+
+## 🧪 Testing
+
+Run unit tests:
+```bash
+go test -v ./...
+```
+Run benchmarks:
+```bash
+
+go test -bench=. -run=^Benchmark ./...
 ```
 
 ## 📊 Performance Benchmarks
