@@ -8,6 +8,7 @@ import (
 	"gonum.org/v1/gonum/mat"
 )
 
+// BenchmarkSURD benchmarks performance for various dataset sizes
 func BenchmarkSURD(b *testing.B) {
 	rand.Seed(time.Now().UnixNano())
 
@@ -26,7 +27,7 @@ func BenchmarkSURD(b *testing.B) {
 			// Generate random data
 			data := make([]float64, bm.rows*bm.cols)
 			for i := range data {
-				data[i] = rand.Float64()
+				data[i] = rand.NormFloat64()
 			}
 			X := mat.NewDense(bm.rows, bm.cols, data)
 

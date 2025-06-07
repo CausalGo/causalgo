@@ -1,38 +1,41 @@
 package surd
 
 import (
+	"fmt"
 	"math"
 	"sync"
 
+	"github.com/CausalGo/causalgo/regression"
 	"gonum.org/v1/gonum/floats"
 	"gonum.org/v1/gonum/mat"
-	"gonum.org/v1/gonum/stat"
 )
 
-// Config parameters for SURD algorithm
+// Config stores parameters for the SURD algorithm
 type Config struct {
-	Lambda    float64 // LASSO regularization parameter
-	Tolerance float64 // Convergence criterion
-	MaxIter   int     // Maximum iterations
-	Workers   int     // Number of goroutines for parallel processing
-	Verbose   bool    // Verbose output mode
+	Lambda    float64 // LASSO regularization parameter (passed to default regressor)
+	Tolerance float64 // Convergence criterion for coordinate descent
+	MaxIter   int     // Maximum iterations for coordinate descent
+	Workers   int     // Number of parallel workers
+	Verbose   bool    // Enable verbose logging
 }
 
 // GraphResult represents causal discovery results
 type GraphResult struct {
-	Adjacency [][]bool    // Adjacency matrix of causal graph
-	Order     []int       // Variable inclusion order
-	Residuals []float64   // Residual variances
-	Weights   [][]float64 // Causal weights
+	Adjacency [][]bool    // Adjacency matrix (true = causal link)
+	Order     []int       // Variable ordering (causal sequence)
+	Residuals []float64   // Residual variances at each step
+	Weights   [][]float64 // Causal weights matrix
 }
 
-// SURD main type for causal discovery
+// SURD implements Sparse Unbiased Recursive Regression for causal discovery
 type SURD struct {
-	config Config
+	config    Config
+	regressor regression.Regressor // Regression model (default: LASSO)
 }
 
-// New creates a new SURD instance
+// New creates a new SURD instance with default LASSO regressor
 func New(cfg Config) *SURD {
+	// Set default values for missing parameters
 	if cfg.Lambda <= 0 {
 		cfg.Lambda = 0.01
 	}
@@ -46,14 +49,45 @@ func New(cfg Config) *SURD {
 		cfg.Workers = 4
 	}
 
-	return &SURD{config: cfg}
+	// Create default LASSO regressor with validated config
+	lassoReg := regression.NewLASSO(regression.LASSOConfig{
+		Lambda:    cfg.Lambda,
+		Tolerance: cfg.Tolerance,
+		MaxIter:   cfg.MaxIter,
+	})
+
+	return &SURD{
+		config:    cfg,
+		regressor: lassoReg,
+	}
+}
+
+// SetRegressor sets a custom regressor implementation
+// Allows extending SURD with different regression models
+func (s *SURD) SetRegressor(r regression.Regressor) {
+	s.regressor = r
 }
 
 // Fit performs causal discovery on input data
+// X: n x p matrix (n samples, p variables)
+// Returns: causal graph and computation results
 func (s *SURD) Fit(X *mat.Dense) (*GraphResult, error) {
+	// Validate input matrix
+	if X == nil {
+		return nil, fmt.Errorf("nil input matrix")
+	}
+
 	n, p := X.Dims()
 
-	// Standardize data
+	// Handle edge cases
+	if n == 0 || p == 0 {
+		return nil, fmt.Errorf("empty input matrix")
+	}
+	if n < 2 {
+		return nil, fmt.Errorf("need at least 2 rows, got %d", n)
+	}
+
+	// Standardize data to zero mean and unit variance
 	stdX := s.standardize(X)
 
 	// Initialize result structures
@@ -74,142 +108,52 @@ func (s *SURD) Fit(X *mat.Dense) (*GraphResult, error) {
 		remaining[i] = true
 	}
 
-	// Main recursive loop
+	// Main recursive loop - select one variable per iteration
 	for len(result.Order) < p {
+		activeCount := countActive(remaining)
+
 		// Handle last variable separately
-		activeCount := 0
-		for _, rem := range remaining {
-			if rem {
-				activeCount++
-			}
-		}
 		if activeCount == 1 {
-			for j := 0; j < p; j++ {
-				if remaining[j] {
-					result.Order = append(result.Order, j)
-					col := make([]float64, n)
-					mat.Col(col, j, stdX)
-					result.Residuals[len(result.Order)-1] = computeMSE(col)
-					remaining[j] = false
-					break
-				}
-			}
+			processLastVariable(stdX, result, remaining, n)
 			continue
 		}
 
-		type varResult struct {
-			idx     int
-			mse     float64
-			weights []float64
-		}
+		// Parallel processing of active variables
+		results := s.processVariables(stdX, remaining, n, p)
 
-		results := make(chan varResult, p)
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, s.config.Workers)
+		// Find best variable (lowest MSE)
+		bestVar, bestMSE, bestWeights := findBestVariable(results)
 
-		for j := 0; j < p; j++ {
-			if !remaining[j] {
-				continue
-			}
-
-			wg.Add(1)
-			sem <- struct{}{}
-
-			go func(j int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-
-				// Prepare data for LASSO
-				Xsub, y := s.prepareData(stdX, j, remaining)
-
-				// Skip if no predictors available
-				if Xsub == nil {
-					results <- varResult{idx: j, mse: math.MaxFloat64}
-					return
-				}
-
-				// Run LASSO regression
-				weights := s.lassoRegression(Xsub, y)
-
-				// Calculate residuals and MSE
-				residuals := s.calculateResiduals(Xsub, y, weights)
-				mse := computeMSE(residuals)
-
-				results <- varResult{
-					idx:     j,
-					mse:     mse,
-					weights: weights,
-				}
-			}(j)
-		}
-
-		go func() {
-			wg.Wait()
-			close(results)
-		}()
-
-		// Find best variable
-		bestVar := -1
-		bestMSE := math.MaxFloat64
-		var bestWeights []float64
-
-		for res := range results {
-			if res.mse < bestMSE {
-				bestMSE = res.mse
-				bestVar = res.idx
-				bestWeights = res.weights
-			}
-		}
-
-		// Update results
-		result.Order = append(result.Order, bestVar)
-		result.Residuals[len(result.Order)-1] = bestMSE
-
-		// Update weights and adjacency
-		idx := 0
-		for j := 0; j < p; j++ {
-			if !remaining[j] || j == bestVar {
-				continue
-			}
-
-			if math.Abs(bestWeights[idx]) > s.config.Tolerance {
-				result.Adjacency[bestVar][j] = true
-				result.Weights[bestVar][j] = bestWeights[idx]
-			}
-			idx++
-		}
-
-		// Mark variable as processed
-		remaining[bestVar] = false
+		// Update results with best variable
+		s.updateResults(result, bestVar, bestMSE, bestWeights, remaining, p)
 	}
 
 	return result, nil
 }
 
 // prepareData prepares matrices for regression
+// target: index of target variable
+// remaining: active variables mask
+// Returns: predictor matrix and target vector
 func (s *SURD) prepareData(X *mat.Dense, target int, remaining []bool) (*mat.Dense, []float64) {
 	n, p := X.Dims()
+	activeCount := countActive(remaining)
 
-	// Count active variables
-	activeCount := 0
-	for _, rem := range remaining {
-		if rem {
-			activeCount++
-		}
-	}
+	// Get target vector
+	y := make([]float64, n)
+	mat.Col(y, target, X)
 
-	// Return nil if no predictors available
+	// Handle case with no predictors
 	predCount := activeCount - 1
 	if predCount <= 0 {
-		return nil, nil
+		return nil, y
 	}
 
 	// Create predictor matrix
 	Xmat := mat.NewDense(n, predCount, nil)
-	y := make([]float64, n)
-
-	// Fill data
 	colIdx := 0
+
+	// Collect all active predictors except target
 	for j := 0; j < p; j++ {
 		if !remaining[j] || j == target {
 			continue
@@ -221,70 +165,7 @@ func (s *SURD) prepareData(X *mat.Dense, target int, remaining []bool) (*mat.Den
 		colIdx++
 	}
 
-	// Target variable
-	mat.Col(y, target, X)
-
 	return Xmat, y
-}
-
-// lassoRegression implements LASSO with coordinate descent
-func (s *SURD) lassoRegression(X *mat.Dense, y []float64) []float64 {
-	n, p := X.Dims()
-	weights := make([]float64, p)
-
-	// Cache X^T for performance
-	XT := mat.DenseCopyOf(X.T())
-
-	for iter := 0; iter < s.config.MaxIter; iter++ {
-		maxChange := 0.0
-
-		// Process all features
-		for j := 0; j < p; j++ {
-			// Compute partial residual
-			residual := s.calculatePartialResidual(X, y, weights, j)
-
-			// Compute weight update
-			col := XT.RawRowView(j)
-			rDot := floats.Dot(col, residual)
-
-			// Apply soft thresholding
-			newWeight := softThreshold(rDot/float64(n), s.config.Lambda)
-
-			// Update weight
-			delta := math.Abs(newWeight - weights[j])
-			if delta > maxChange {
-				maxChange = delta
-			}
-			weights[j] = newWeight
-		}
-
-		// Check convergence
-		if maxChange < s.config.Tolerance {
-			break
-		}
-	}
-
-	return weights
-}
-
-// calculatePartialResidual computes residual without feature j
-func (s *SURD) calculatePartialResidual(X *mat.Dense, y, weights []float64, exclude int) []float64 {
-	n, _ := X.Dims()
-	residual := make([]float64, n)
-	copy(residual, y)
-
-	// Subtract contributions from all features except excluded
-	for j := 0; j < len(weights); j++ {
-		if j == exclude {
-			continue
-		}
-
-		col := make([]float64, n)
-		mat.Col(col, j, X)
-		floats.AddScaled(residual, -weights[j], col)
-	}
-
-	return residual
 }
 
 // calculateResiduals computes regression residuals
@@ -292,11 +173,10 @@ func (s *SURD) calculateResiduals(X *mat.Dense, y, weights []float64) []float64 
 	n, _ := X.Dims()
 	residuals := make([]float64, n)
 
-	// Compute predictions
+	// Vectorized computation: residuals = y - Xw
 	predictions := mat.NewVecDense(n, nil)
 	predictions.MulVec(X, mat.NewVecDense(len(weights), weights))
 
-	// Compute residuals
 	for i := 0; i < n; i++ {
 		residuals[i] = y[i] - predictions.AtVec(i)
 	}
@@ -304,29 +184,152 @@ func (s *SURD) calculateResiduals(X *mat.Dense, y, weights []float64) []float64 
 	return residuals
 }
 
-// standardize normalizes data
+// standardize normalizes data to zero mean and unit population variance
 func (s *SURD) standardize(X *mat.Dense) *mat.Dense {
 	n, p := X.Dims()
-	stdX := mat.DenseCopyOf(X)
+	stdX := mat.NewDense(n, p, nil)
+	stdX.Copy(X)
 
 	for j := 0; j < p; j++ {
-		col := make([]float64, n)
-		mat.Col(col, j, stdX)
+		col := mat.Col(nil, j, stdX)
+		mean := floats.Sum(col) / float64(n)
 
-		mean := stat.Mean(col, nil)
-		stddev := stat.StdDev(col, nil)
+		// Calculate population standard deviation (division by n)
+		variance := 0.0
+		for _, v := range col {
+			diff := v - mean
+			variance += diff * diff
+		}
+		stddev := math.Sqrt(variance / float64(n))
 
-		if stddev < 1e-8 {
-			stddev = 1
+		// Handle constant columns
+		if stddev < 1e-12 {
+			for i := 0; i < n; i++ {
+				stdX.Set(i, j, 0)
+			}
+		} else {
+			for i := 0; i < n; i++ {
+				val := (stdX.At(i, j) - mean) / stddev
+				stdX.Set(i, j, val)
+			}
+		}
+	}
+	return stdX
+}
+
+// Helper function: count active variables
+func countActive(remaining []bool) int {
+	count := 0
+	for _, rem := range remaining {
+		if rem {
+			count++
+		}
+	}
+	return count
+}
+
+// Helper function: process last remaining variable
+func processLastVariable(stdX *mat.Dense, result *GraphResult, remaining []bool, n int) {
+	for j := range remaining {
+		if remaining[j] {
+			result.Order = append(result.Order, j)
+			col := make([]float64, n)
+			mat.Col(col, j, stdX)
+			result.Residuals[len(result.Order)-1] = computeMSE(col)
+			remaining[j] = false
+			break
+		}
+	}
+}
+
+// Helper function: parallel processing of variables
+func (s *SURD) processVariables(stdX *mat.Dense, remaining []bool, n, p int) chan varResult {
+	results := make(chan varResult, p)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, s.config.Workers)
+
+	for j := 0; j < p; j++ {
+		if !remaining[j] {
+			continue
 		}
 
-		for i := range col {
-			col[i] = (col[i] - mean) / stddev
-		}
-		stdX.SetCol(j, col)
+		wg.Add(1)
+		sem <- struct{}{}
+
+		go func(j int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			// Prepare data for regression
+			Xsub, y := s.prepareData(stdX, j, remaining)
+
+			// Skip if no predictors available
+			if Xsub == nil {
+				results <- varResult{idx: j, mse: math.MaxFloat64}
+				return
+			}
+
+			// Run regression
+			weights := s.regressor.Fit(Xsub, y)
+
+			// Calculate residuals and MSE
+			residuals := s.calculateResiduals(Xsub, y, weights)
+			mse := computeMSE(residuals)
+
+			results <- varResult{
+				idx:     j,
+				mse:     mse,
+				weights: weights,
+			}
+		}(j)
 	}
 
-	return stdX
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	return results
+}
+
+// Helper function: find best variable
+func findBestVariable(results chan varResult) (int, float64, []float64) {
+	bestVar := -1
+	bestMSE := math.MaxFloat64
+	var bestWeights []float64
+
+	for res := range results {
+		if res.mse < bestMSE {
+			bestMSE = res.mse
+			bestVar = res.idx
+			bestWeights = res.weights
+		}
+	}
+	return bestVar, bestMSE, bestWeights
+}
+
+// Helper function: update results with best variable
+func (s *SURD) updateResults(result *GraphResult, bestVar int, bestMSE float64,
+	bestWeights []float64, remaining []bool, p int) {
+	result.Order = append(result.Order, bestVar)
+	result.Residuals[len(result.Order)-1] = bestMSE
+
+	// Update weights and adjacency
+	idx := 0
+	for j := 0; j < p; j++ {
+		if !remaining[j] || j == bestVar {
+			continue
+		}
+
+		if math.Abs(bestWeights[idx]) > s.config.Tolerance {
+			result.Adjacency[bestVar][j] = true
+			result.Weights[bestVar][j] = bestWeights[idx]
+		}
+		idx++
+	}
+
+	// Mark variable as processed
+	remaining[bestVar] = false
 }
 
 // computeMSE calculates mean squared error
@@ -342,12 +345,9 @@ func computeMSE(residuals []float64) float64 {
 	return sum / float64(n)
 }
 
-// softThreshold applies soft thresholding operator
-func softThreshold(z, lambda float64) float64 {
-	if z > lambda {
-		return z - lambda
-	} else if z < -lambda {
-		return z + lambda
-	}
-	return 0
+// Internal struct for parallel results
+type varResult struct {
+	idx     int
+	mse     float64
+	weights []float64
 }
