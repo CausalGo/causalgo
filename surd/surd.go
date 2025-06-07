@@ -169,13 +169,13 @@ func (s *SURD) prepareData(x *mat.Dense, target int, remaining []bool) (*mat.Den
 }
 
 // calculateResiduals computes regression residuals
-func (s *SURD) calculateResiduals(X *mat.Dense, y, weights []float64) []float64 {
-	n, _ := X.Dims()
+func (s *SURD) calculateResiduals(x *mat.Dense, y, weights []float64) []float64 {
+	n, _ := x.Dims()
 	residuals := make([]float64, n)
 
 	// Vectorized computation: residuals = y - Xw
 	predictions := mat.NewVecDense(n, nil)
-	predictions.MulVec(X, mat.NewVecDense(len(weights), weights))
+	predictions.MulVec(x, mat.NewVecDense(len(weights), weights))
 
 	for i := 0; i < n; i++ {
 		residuals[i] = y[i] - predictions.AtVec(i)
@@ -185,10 +185,10 @@ func (s *SURD) calculateResiduals(X *mat.Dense, y, weights []float64) []float64 
 }
 
 // standardize normalizes data to zero mean and unit population variance
-func (s *SURD) standardize(X *mat.Dense) *mat.Dense {
-	n, p := X.Dims()
+func (s *SURD) standardize(x *mat.Dense) *mat.Dense {
+	n, p := x.Dims()
 	stdX := mat.NewDense(n, p, nil)
-	stdX.Copy(X)
+	stdX.Copy(x)
 
 	for j := 0; j < p; j++ {
 		col := mat.Col(nil, j, stdX)
