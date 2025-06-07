@@ -37,11 +37,11 @@ jobs:
       - name: Run benchmarks
         run: go test -bench=. -run=^Benchmark ./...
 
-      # Fix: Update golangci-lint for Go 1.24 compatibility
+      # FIX: Upgrade to golangci-lint v1.57+ for full Go 1.24 support
       - name: Lint
         uses: golangci/golangci-lint-action@v3
         with:
-          version: v1.56  # Required for Go 1.24 support
+          version: v1.57  # Minimum version with Go 1.24 support
 
   coverage:
     runs-on: ubuntu-latest
