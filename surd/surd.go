@@ -71,13 +71,13 @@ func (s *SURD) SetRegressor(r regression.Regressor) {
 // Fit performs causal discovery on input data
 // X: n x p matrix (n samples, p variables)
 // Returns: causal graph and computation results
-func (s *SURD) Fit(X *mat.Dense) (*GraphResult, error) {
+func (s *SURD) Fit(x *mat.Dense) (*GraphResult, error) {
 	// Validate input matrix
-	if X == nil {
+	if x == nil {
 		return nil, fmt.Errorf("nil input matrix")
 	}
 
-	n, p := X.Dims()
+	n, p := x.Dims()
 
 	// Handle edge cases
 	if n == 0 || p == 0 {
@@ -88,7 +88,7 @@ func (s *SURD) Fit(X *mat.Dense) (*GraphResult, error) {
 	}
 
 	// Standardize data to zero mean and unit variance
-	stdX := s.standardize(X)
+	stdX := s.standardize(x)
 
 	// Initialize result structures
 	result := &GraphResult{
@@ -135,13 +135,13 @@ func (s *SURD) Fit(X *mat.Dense) (*GraphResult, error) {
 // target: index of target variable
 // remaining: active variables mask
 // Returns: predictor matrix and target vector
-func (s *SURD) prepareData(X *mat.Dense, target int, remaining []bool) (*mat.Dense, []float64) {
-	n, p := X.Dims()
+func (s *SURD) prepareData(x *mat.Dense, target int, remaining []bool) (*mat.Dense, []float64) {
+	n, p := x.Dims()
 	activeCount := countActive(remaining)
 
 	// Get target vector
 	y := make([]float64, n)
-	mat.Col(y, target, X)
+	mat.Col(y, target, x)
 
 	// Handle case with no predictors
 	predCount := activeCount - 1
@@ -150,7 +150,7 @@ func (s *SURD) prepareData(X *mat.Dense, target int, remaining []bool) (*mat.Den
 	}
 
 	// Create predictor matrix
-	Xmat := mat.NewDense(n, predCount, nil)
+	xMat := mat.NewDense(n, predCount, nil)
 	colIdx := 0
 
 	// Collect all active predictors except target
@@ -160,12 +160,12 @@ func (s *SURD) prepareData(X *mat.Dense, target int, remaining []bool) (*mat.Den
 		}
 
 		col := make([]float64, n)
-		mat.Col(col, j, X)
-		Xmat.SetCol(colIdx, col)
+		mat.Col(col, j, x)
+		xMat.SetCol(colIdx, col)
 		colIdx++
 	}
 
-	return Xmat, y
+	return xMat, y
 }
 
 // calculateResiduals computes regression residuals
@@ -261,19 +261,19 @@ func (s *SURD) processVariables(stdX *mat.Dense, remaining []bool, n, p int) cha
 			defer func() { <-sem }()
 
 			// Prepare data for regression
-			Xsub, y := s.prepareData(stdX, j, remaining)
+			xSub, y := s.prepareData(stdX, j, remaining)
 
 			// Skip if no predictors available
-			if Xsub == nil {
+			if xSub == nil {
 				results <- varResult{idx: j, mse: math.MaxFloat64}
 				return
 			}
 
 			// Run regression
-			weights := s.regressor.Fit(Xsub, y)
+			weights := s.regressor.Fit(xSub, y)
 
 			// Calculate residuals and MSE
-			residuals := s.calculateResiduals(Xsub, y, weights)
+			residuals := s.calculateResiduals(xSub, y, weights)
 			mse := computeMSE(residuals)
 
 			results <- varResult{

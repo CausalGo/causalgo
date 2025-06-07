@@ -1,16 +1,15 @@
 package surd
 
 import (
+	"gonum.org/v1/gonum/mat"
 	"math/rand"
 	"testing"
-	"time"
-
-	"gonum.org/v1/gonum/mat"
 )
 
 // BenchmarkSURD benchmarks performance for various dataset sizes
 func BenchmarkSURD(b *testing.B) {
-	rand.Seed(time.Now().UnixNano())
+	//nolint:gosec // Test file - weak random is acceptable
+	_ = rand.Intn(1000) + 1
 
 	benchmarks := []struct {
 		name string

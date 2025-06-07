@@ -40,12 +40,12 @@ func NewLASSO(cfg LASSOConfig) *LASSO {
 
 // Fit trains the LASSO model using coordinate descent algorithm
 // Implements Regressor interface
-func (l *LASSO) Fit(X *mat.Dense, y []float64) []float64 {
-	if X == nil {
+func (l *LASSO) Fit(x *mat.Dense, y []float64) []float64 {
+	if x == nil {
 		return nil
 	}
 
-	n, p := X.Dims()
+	n, p := x.Dims()
 	if p == 0 {
 		return []float64{}
 	}
@@ -56,7 +56,7 @@ func (l *LASSO) Fit(X *mat.Dense, y []float64) []float64 {
 	norms := make([]float64, p)
 	for j := 0; j < p; j++ {
 		col := make([]float64, n)
-		mat.Col(col, j, X)
+		mat.Col(col, j, x)
 		cols[j] = col
 		norms[j] = floats.Dot(col, col)
 		if norms[j] < 1e-12 { // Prevent division by zero
